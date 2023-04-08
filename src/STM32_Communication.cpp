@@ -32,7 +32,7 @@
 #include "my_robot/msg_for_cam.h"
 
 using namespace std;
-using namespace boost::asio; //定义一个命名空间，用于后面的读写操作
+using namespace boost::asio; // 定义一个命名空间，用于后面的读写操作
 
 float distances[3];
 float distances_last[3];
@@ -41,8 +41,8 @@ float position_screw = -1.0, position_w = 0;
 float min_interval[3] = {0.001, 0.001, 0.0001};
 float max_interval[3] = {1.0, 1.0, 1.0};
 
-float RATIO[4] = {36.0, 19.0, 1.0, 1.0};       //减速比 2006电机减速比为1:36, 3508电机减速比为1:19
-float WHEEL_D[4] = {0.06, 0.012, 0.0667, 0.1}; //轮子直径  m
+float RATIO[4] = {36.0, 19.0, 1.0, 1.0};       // 减速比 2006电机减速比为1:36, 3508电机减速比为1:19
+float WHEEL_D[4] = {0.06, 0.012, 0.0667, 0.1}; // 轮子直径  m
 float HYPOTENUSE = 0.15;
 float SCREW_PITCH = 0.004;
 float WHEEL_PI = 3.141693; // pi
@@ -62,15 +62,15 @@ typedef struct
 {
   uint32_t counter;
 
-  int32_t total_angle;  //电机转动的总角度
-  int16_t speed_rpm;    //转速
-  int16_t real_current; //实际的转矩电流
-  uint16_t Temp;        //温度
+  int32_t total_angle;  // 电机转动的总角度
+  int16_t speed_rpm;    // 转速
+  int16_t real_current; // 实际的转矩电流
+  uint16_t Temp;        // 温度
 
-  int32_t round_cnt;     //电机转动圈数
+  int32_t round_cnt;     // 电机转动圈数
   uint16_t angle;        // abs angle range:[0,8191] 电机转角绝对值
   uint16_t last_angle;   // abs angle range:[0,8191]
-  uint16_t offset_angle; //电机启动时候的零偏角度
+  uint16_t offset_angle; // 电机启动时候的零偏角度
 
   uint16_t microswitches;
 } moto_measure_t;
@@ -87,6 +87,45 @@ union IntData // union的作用为实现char数组和int16数据类型之间的�
   int16_t int16_dat;
   unsigned char byte_data[2];
 } speed_rpm;
+
+/*typedef struct
+{
+  微动开关状态；
+  底盘角度；
+} place;
+
+#define P_NUM 2
+
+place startpoint={}；
+place inspect_p[P_NUM]={}；
+*/
+
+#define NUM_CHECKPOINTS 4 // 宏定义检测点数量
+#define DEAD_X 0.1
+#define DEAD_Z 0.1
+#define DEAD_W 0.1
+
+// 定义位置信息结构体
+struct Position
+{
+  bool 3508_start_sw;
+  bool 3508_end_sw;
+  bool 2006_start_sw;
+  bool 2006_end_sw;
+  int x;
+  int z;
+  int w;
+};
+
+// 保存每个检测点的位置信息
+Position checkpoints[NUM_CHECKPOINTS] = {
+    {TRUE, FALSE, TRUE, FALSE, 0, 0, 0},    // 起点
+    {FALSE, FALSE, FALSE, FALSE, 10, 0, 0}, // 检测点1
+    {FALSE, FALSE, FALSE, FALSE, 20, 0, 0}, // 检测点2
+    {FALSE, FALSE, FALSE, FALSE, 30, 0, 0}  // 检测点3
+};
+
+int currentCheckpoint = 0, targetCheckpoint = 0;
 
 void cmd_vel_callback(const geometry_msgs::Twist::ConstPtr &msg);
 void send_speed_to_chassis(float x, float y, float w);
@@ -174,6 +213,7 @@ int main(int argc, char **argv)
   // ROS_INFO_STREAM("clear odometry successful(mickx4_bringup.cpp) !");
   int count = 0;
   int temp = 0;
+  int x_ready = 0, z_ready = 0, w_ready = 0;
 
   while (ros::ok())
   {
@@ -207,6 +247,58 @@ int main(int argc, char **argv)
     publish_odomtery(count * 0.1, 0, 0, 1, 0, 0);
     send_cam_flag_with_pos(true);
 
+    if (true && targetCheckpoint == currentCheckpoint) // 收到消息,先用sw代替
+    {
+      // 给回消息，使其停发消息，或者openmv给检测点消息就不需要
+      if (currentCheckpoint == NUM_CHECKPOINTS - 1)
+      {
+        targetCheckpoint = 0;
+      }
+      else
+      {
+        targetCheckpoint = currentCheckpoint + 1;
+      }
+    }
+
+    if (targetCheckpoint != currentCheckpoint)
+    {
+      Position targetPosition = checkpoints[targetCheckpoint];
+      if (abs(targetPosition.x - position[0]) > DEAD_X)
+      {
+        send_to_moto(1, 1, 400, targetPosition.x - position[0]);
+      }
+      else
+      {
+        x_ready = 1;
+      }
+
+      if (abs(targetPosition.z - position[2]) > DEAD_Z)
+      {
+        send_to_moto(0, 1, 2500, targetPosition.z - position[2]);
+      }
+      else
+      {
+        z_ready = 1;
+      }
+
+      if (abs(targetPosition.w - position_w) > DEAD_W)
+      {
+        send_to_moto(2, 1, 10, targetPosition.w - position_w);
+      }
+      else
+      {
+        w_ready = 1;
+      }
+
+      if (x_ready && z_ready && w_ready)
+      {
+        // 发送已到达消息，给openmv
+
+        x_ready = z_ready = w_ready = 0;
+        currentCheckpoint = targetCheckpoint;
+      }
+    }
+
     temp++;
     if (temp == 200)
     {
@@ -222,11 +314,11 @@ int main(int argc, char **argv)
   ros::shutdown();
   return 1;
 }
-//尝试实现……
+// 尝试实现……
 void motion_test(int count, int tmp, bool fixedPointSwitches)
 {
 }
-//简化相机信号发送，提取出send_cam_flag(bool flag)
+// 简化相机信号发送，提取出send_cam_flag(bool flag)
 void send_cam_flag(bool flag)
 {
   std_msgs::String msg;
@@ -244,7 +336,7 @@ void send_cam_flag_with_pos(bool flag)
   cam_flag_with_pos_pub.publish(msg);
 }
 
-//最基础的展示，只是确认速度和位置模式正常
+// 最基础的展示，只是确认速度和位置模式正常
 void for_show_vel_and_pos(int count, bool fixedPointSwitches)
 {
   if (fixedPointSwitches == false)
@@ -269,7 +361,7 @@ void for_show_vel_and_pos(int count, bool fixedPointSwitches)
   }
 }
 
-//最基础的展示，只是为了2022-1106的SRTP拍摄
+// 最基础的展示，只是为了2022-1106的SRTP拍摄
 void for_show_2022_1106(int count)
 {
   int stepLen = 10;
@@ -294,6 +386,37 @@ void for_show_2022_1106(int count)
   }
 }
 
+/**
+ * @function 从一个位置运动到另一个位置
+ * 到达则返回位置编号　否则返回-1
+ */
+/*
+int p1_to_p2(place1,place2)
+{
+  if (开关状态不满足)
+  {
+    send_to_moto;
+    return -1;
+  }
+  else if(地盘角度不满足)
+  {
+    send_to_moto;
+    return -1;
+  }
+  else
+  {
+    return 1;
+  }
+}*/
+
+/**
+ * @function 下达开始采集数据命令
+ *
+ */
+void send_to_photo_openmv()
+{
+}
+
 void cmd_vel_callback(const geometry_msgs::Twist::ConstPtr &msg)
 {
   float speed_x, speed_z, speed_w;
@@ -302,14 +425,14 @@ void cmd_vel_callback(const geometry_msgs::Twist::ConstPtr &msg)
   speed_w = msg->angular.z;
 
   float vel[4];
-  vel[0] = speed_z; //左边 //转化为每个轮子的线速度
+  vel[0] = speed_z; // 左边 //转化为每个轮子的线速度
   vel[1] = speed_x;
   vel[2] = speed_w;
 
   for (int i = 0; i < 4; i++)
   {
-    vel[i] = vel[i] / (WHEEL_D[i] * WHEEL_PI); //转换为轮子的速度　RPM
-    vel[i] = vel[i] * RATIO[i] * 60;           //转每秒转换到RPM
+    vel[i] = vel[i] / (WHEEL_D[i] * WHEEL_PI); // 转换为轮子的速度　RPM
+    vel[i] = vel[i] * RATIO[i] * 60;           // 转每秒转换到RPM
   }
 
   for (int i = 0; i < 4; i++)
@@ -401,13 +524,13 @@ bool analy_uart_recive_data(std_msgs::String serial_data)
   unsigned char reviced_tem[500];
   uint16_t len = 0, i = 0, j = 0;
   unsigned char check = 0;
-  unsigned char tem_last = 0, tem_curr = 0, rec_flag = 0; //定义接收标志位
-  uint16_t header_count = 0, step = 0;                    //计数这个数据序列中有多少个帧头
+  unsigned char tem_last = 0, tem_curr = 0, rec_flag = 0; // 定义接收标志位
+  uint16_t header_count = 0, step = 0;                    // 计数这个数据序列中有多少个帧头
   len = serial_data.data.size();
   if (len < 1 || len > 500)
   {
     ROS_INFO_STREAM("serial data is too short ,  len: " << serial_data.data.size());
-    return false; //数据长度太短　
+    return false; // 数据长度太短　
   }
   ROS_INFO_STREAM("Read: " << serial_data.data.size());
 
@@ -417,7 +540,7 @@ bool analy_uart_recive_data(std_msgs::String serial_data)
     tem_last = tem_curr;
     tem_curr = serial_data.data.at(i);
     if (tem_last == 0xAA && tem_curr == 0xFF &&
-        rec_flag == 0) //在接受的数据串中找到帧头　
+        rec_flag == 0) // 在接受的数据串中找到帧头　
     {
       rec_flag = 1;
       reviced_tem[j++] = tem_last;
@@ -442,10 +565,10 @@ bool analy_uart_recive_data(std_msgs::String serial_data)
   int countFrame = 0;
   for (countFrame = 0; countFrame < header_count; countFrame++)
   {
-    len = (reviced_tem[3 + step] + 4 + 3); //第一个帧头的长度
+    len = (reviced_tem[3 + step] + 4 + 3); // 第一个帧头的长度
     if (reviced_tem[0 + step] == 0xAA && reviced_tem[1 + step] == 0xFF &&
         reviced_tem[len - 2 + step] == 0xEF && reviced_tem[len - 1 + step] == 0xFE)
-    { //检查帧头帧尾是否完整
+    { // 检查帧头帧尾是否完整
 
       ROS_INFO_STREAM("recived a frame");
       check = 0x0;
@@ -453,9 +576,9 @@ bool analy_uart_recive_data(std_msgs::String serial_data)
       {
         check += reviced_tem[k + step];
       }
-      //检验数据长度和校验码是否正确
-      // if (reviced_tem[len - 3 + step] != check && reviced_tem[len -
-      // 3 + step] != 0xff) return false;
+      // 检验数据长度和校验码是否正确
+      //  if (reviced_tem[len - 3 + step] != check && reviced_tem[len -
+      //  3 + step] != 0xff) return false;
 
       if (reviced_tem[2 + step] >= 0xA5 &&
           reviced_tem[2 + step] <= 0xA8)
@@ -542,13 +665,13 @@ void calculate_position_for_odometry(void)
   float linear_x, linear_z, angular_w;
 
   ROS_INFO_STREAM("calculate_position_for_odometry");
-  //轮子转动的圈数乘以　N*pi*D
+  // 轮子转动的圈数乘以　N*pi*D
   for (int i = 0; i < 3; i++)
   {
     distances_last[i] = distances[i];
     distances[i] = moto_chassis[i].round_cnt + (moto_chassis[i].total_angle % 8192) / 8192.0;
     distances[i] = distances[i] / RATIO[i] * WHEEL_PI * WHEEL_D[i];
-    distances_delta[i] = distances[i] - distances_last[i]; //每个轮子位移的增量
+    distances_delta[i] = distances[i] - distances_last[i]; // 每个轮子位移的增量
     if (abs(distances_delta[i]) < min_interval[i] || abs(distances_delta[i]) > max_interval[i])
       distances_delta[i] = 0;
   }
@@ -595,14 +718,14 @@ void publish_odomtery(float position_x, float position_z, float oriention,
                       float vel_linear_x, float vel_linear_z,
                       float vel_angular_w)
 {
-  static tf::TransformBroadcaster odom_broadcaster; //定义tf对象
-  geometry_msgs::TransformStamped odom_trans;       //创建一个tf发布需要使用的TransformStamped类型消息
-  geometry_msgs::Quaternion odom_quat;              //四元数变量
-  nav_msgs::Odometry odom;                          //定义里程计对象
+  static tf::TransformBroadcaster odom_broadcaster; // 定义tf对象
+  geometry_msgs::TransformStamped odom_trans;       // 创建一个tf发布需要使用的TransformStamped类型消息
+  geometry_msgs::Quaternion odom_quat;              // 四元数变量
+  nav_msgs::Odometry odom;                          // 定义里程计对象
 
-  //坐标（tf）
-  //里程计的偏航角需要转换成四元数才能发布
-  odom_quat = tf::createQuaternionMsgFromYaw(oriention); //将偏航角转换成四元数
+  // 坐标（tf）
+  // 里程计的偏航角需要转换成四元数才能发布
+  odom_quat = tf::createQuaternionMsgFromYaw(oriention); // 将偏航角转换成四元数
   odom_trans.header.stamp = ros::Time::now();
   odom_trans.header.frame_id = "odom";
   odom_trans.child_frame_id = "base_link";
@@ -611,7 +734,7 @@ void publish_odomtery(float position_x, float position_z, float oriention,
   odom_trans.transform.rotation = odom_quat;
   odom_broadcaster.sendTransform(odom_trans);
 
-  //里程计
+  // 里程计
   odom.header.stamp = ros::Time::now();
   odom.header.frame_id = "odom";
   odom.child_frame_id = "base_link";
