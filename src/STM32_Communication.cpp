@@ -101,31 +101,32 @@ place inspect_p[P_NUM]={}；
 */
 
 #define NUM_CHECKPOINTS 4 // 宏定义检测点数量
-#define DEAD_X 0.1
+#define DEAD_X 0.01
 #define DEAD_Z 0.1
 #define DEAD_W 0.1
 
 // 定义位置信息结构体
 struct Position
 {
-  bool 3508_start_sw;
-  bool 3508_end_sw;
-  bool 2006_start_sw;
-  bool 2006_end_sw;
-  int x;
-  int z;
-  int w;
+  bool start_sw_3508;
+  bool end_sw_3508;
+  bool start_sw_2006;
+  bool end_sw_2006;
+  float x;
+  float z;
+  float w;
 };
 
 // 保存每个检测点的位置信息
 Position checkpoints[NUM_CHECKPOINTS] = {
-    {TRUE, FALSE, TRUE, FALSE, 0, 0, 0},    // 起点
-    {FALSE, FALSE, FALSE, FALSE, 10, 0, 0}, // 检测点1
-    {FALSE, FALSE, FALSE, FALSE, 20, 0, 0}, // 检测点2
-    {FALSE, FALSE, FALSE, FALSE, 30, 0, 0}  // 检测点3
+    {true, false, true, false, 0, 0, 0},          // 起点
+    {false, false, false, false, -0.1, 0.8, 0.8}, // 检测点1
+    {false, false, false, false, -0.2, 1.6, 1.6}, // 检测点2
+    {false, false, false, false, -0.3, 3.1, 3.14} // 检测点3
 };
 
 int currentCheckpoint = 0, targetCheckpoint = 0;
+bool set_start_flag = false;
 
 void cmd_vel_callback(const geometry_msgs::Twist::ConstPtr &msg);
 void send_speed_to_chassis(float x, float y, float w);
@@ -142,6 +143,7 @@ void for_show_vel_and_pos(int count, bool fixedPointSwitches);
 void send_cam_flag(bool flag);
 void send_cam_flag_with_pos(bool flag);
 void motion_test(int count, bool fixedPointSwitches);
+void set_start_point(Position *checkpoints);
 
 int main(int argc, char **argv)
 {
@@ -162,33 +164,33 @@ int main(int argc, char **argv)
   cam_flag_pub = n.advertise<std_msgs::String>("/cam_flag", 1000);
   cam_flag_with_pos_pub = n.advertise<my_robot::msg_for_cam>("/cam_flag_with_pos", 1000);
 
-  // // 开启串口模块
-  // try
-  // {
-  //   ros_ser.setPort(dev);
-  //   ros_ser.setBaudrate(buad);
-  //   serial::Timeout to = serial::Timeout::simpleTimeout(1000);
-  //   to.inter_byte_timeout = 1;
-  //   to.read_timeout_constant = 5;
-  //   to.read_timeout_multiplier = 0;
-  //   ros_ser.setTimeout(to);
-  //   ros_ser.open();
-  //   ros_ser.flushInput(); //清空缓冲区数据
-  // }
-  // catch (serial::IOException &e)
-  // {
-  //   ROS_ERROR_STREAM("Unable to open port ");
-  //   return -1;
-  // }
-  // if (ros_ser.isOpen())
-  // {
-  //   ros_ser.flushInput(); //清空缓冲区数据
-  //   ROS_INFO_STREAM("Serial Port opened");
-  // }
-  // else
-  // {
-  //   return -1;
-  // }
+  // 开启串口模块
+  try
+  {
+    ros_ser.setPort(dev);
+    ros_ser.setBaudrate(buad);
+    serial::Timeout to = serial::Timeout::simpleTimeout(1000);
+    to.inter_byte_timeout = 1;
+    to.read_timeout_constant = 5;
+    to.read_timeout_multiplier = 0;
+    ros_ser.setTimeout(to);
+    ros_ser.open();
+    ros_ser.flushInput(); // 清空缓冲区数据
+  }
+  catch (serial::IOException &e)
+  {
+    ROS_ERROR_STREAM("Unable to open port ");
+    return -1;
+  }
+  if (ros_ser.isOpen())
+  {
+    ros_ser.flushInput(); // 清空缓冲区数据
+    ROS_INFO_STREAM("Serial Port opened");
+  }
+  else
+  {
+    return -1;
+  }
 
   ros::Rate loop_rate(hz);
 
@@ -229,73 +231,99 @@ int main(int argc, char **argv)
 
     // switches[1][4] == true后30秒内，且两个动作完成前，
     // 保持fixedPointSwitches[0] = true
-    if (switches[1][4] == true)
-    {
-      fixedPointSwitches[0] = true;
-      switches[0][0] = switches[0][1] = false;
-      parkStartTime[0] = clock();
-    }
-    else if ((switches[0][0] == true && switches[0][1] == true)) // ||    // clock() - parkStartTime[0] >= 1000 *1000* 30)
-    {
-      fixedPointSwitches[0] = false;
-    }
+
+    // if (switches[1][4] == true)
+    // {
+    //   fixedPointSwitches[0] = true;
+    //   switches[0][0] = switches[0][1] = false;
+    //   parkStartTime[0] = clock();
+    // }
+    // else if ((switches[0][0] == true && switches[0][1] == true)) // ||    // clock() - parkStartTime[0] >= 1000 *1000* 30)
+    // {
+    //   fixedPointSwitches[0] = false;
+    // }
 
     // send_to_moto(2, 1, 10);
     // for_show_2022_1106(count);
     // for_show_vel_and_pos(count, fixedPointSwitches[0]);
 
-    publish_odomtery(count * 0.1, 0, 0, 1, 0, 0);
+    // publish_odomtery(count * 0.1, 0, 0, 1, 0, 0);
     send_cam_flag_with_pos(true);
 
-    if (true && targetCheckpoint == currentCheckpoint) // 收到消息,先用sw代替
+    if (currentCheckpoint == 0 && !switches[0][4] && !switches[0][4] && !set_start_flag) // 条件：应在起点但不在轨道最左和升降最上方
     {
-      // 给回消息，使其停发消息，或者openmv给检测点消息就不需要
-      if (currentCheckpoint == NUM_CHECKPOINTS - 1)
-      {
-        targetCheckpoint = 0;
-      }
-      else
-      {
-        targetCheckpoint = currentCheckpoint + 1;
-      }
+      send_to_moto(1, 1, 400, 1);
+      send_to_moto(0, 1, 2500, 0);
     }
-
-    if (targetCheckpoint != currentCheckpoint)
+    else
     {
-      Position targetPosition = checkpoints[targetCheckpoint];
-      if (abs(targetPosition.x - position[0]) > DEAD_X)
+      if (currentCheckpoint == 0 && !set_start_flag) // 初始化起点偏移量
       {
-        send_to_moto(1, 1, 400, targetPosition.x - position[0]);
+        send_to_moto(1, 1, 0);
+        send_to_moto(0, 1, 0);
+        set_start_point(checkpoints);
+        set_start_flag = true;
       }
-      else
+      else // 巡检流程
       {
-        x_ready = 1;
-      }
+        if (switches[0][4] == true && targetCheckpoint == currentCheckpoint) // 收到消息,先用sw代替
+        {                                                                    // 给回消息，使其停发消息，或者openmv给检测点消息就不需要
+          if (currentCheckpoint == NUM_CHECKPOINTS - 1)
+          {
+            targetCheckpoint = 0;
+          }
+          else
+          {
+            targetCheckpoint = currentCheckpoint + 1;
+          }
+        }
 
-      if (abs(targetPosition.z - position[2]) > DEAD_Z)
-      {
-        send_to_moto(0, 1, 2500, targetPosition.z - position[2]);
-      }
-      else
-      {
-        z_ready = 1;
-      }
+        if (targetCheckpoint != currentCheckpoint)
+        {
+          bool signx, signz, signw;
+          Position targetPosition = checkpoints[targetCheckpoint];
+          signx = (targetPosition.x > position[0]) ? 1 : 0;
+          signz = (targetPosition.z > position[2]) ? 1 : 0;
+          signw = (targetPosition.w > position_w) ? 1 : 0;
+          // ROS_INFO_STREAM("signw: " << signw);
+          if (abs(targetPosition.x - position[0]) > DEAD_X && !x_ready)
+          {
+            send_to_moto(1, 1, 400, signx);
+          }
+          else
+          {
+            send_to_moto(1, 1, 0);
+            x_ready = 1;
+          }
 
-      if (abs(targetPosition.w - position_w) > DEAD_W)
-      {
-        send_to_moto(2, 1, 10, targetPosition.w - position_w);
-      }
-      else
-      {
-        w_ready = 1;
-      }
+          if (abs(targetPosition.z - position[2]) > DEAD_Z && !z_ready)
+          {
+            send_to_moto(0, 1, 2500, signz);
+          }
+          else
+          {
+            send_to_moto(0, 1, 0);
+            z_ready = 1;
+          }
 
-      if (x_ready && z_ready && w_ready)
-      {
-        // 发送已到达消息，给openmv
+          if (abs(targetPosition.w - position_w) > DEAD_W && !w_ready)
+          {
+            send_to_moto(2, 1, 10, signw);
+          }
+          else
+          {
+            send_to_moto(2, 1, 0);
+            w_ready = 1;
+          }
 
-        x_ready = z_ready = w_ready = 0;
-        currentCheckpoint = targetCheckpoint;
+          if (x_ready && z_ready && w_ready)
+          {
+            // 发送已到达消息，给openmv
+
+            x_ready = z_ready = w_ready = 0;
+            currentCheckpoint = targetCheckpoint;
+          }
+        }
       }
     }
 
@@ -386,35 +414,14 @@ void for_show_2022_1106(int count)
   }
 }
 
-/**
- * @function 从一个位置运动到另一个位置
- * 到达则返回位置编号　否则返回-1
- */
-/*
-int p1_to_p2(place1,place2)
+void set_start_point(Position *checkpoints)
 {
-  if (开关状态不满足)
+  for (int i = 0; i < NUM_CHECKPOINTS; i++)
   {
-    send_to_moto;
-    return -1;
+    checkpoints[i].x += position[0];
+    checkpoints[i].z += position[2];
+    checkpoints[i].w += position_w;
   }
-  else if(地盘角度不满足)
-  {
-    send_to_moto;
-    return -1;
-  }
-  else
-  {
-    return 1;
-  }
-}*/
-
-/**
- * @function 下达开始采集数据命令
- *
- */
-void send_to_photo_openmv()
-{
 }
 
 void cmd_vel_callback(const geometry_msgs::Twist::ConstPtr &msg)
